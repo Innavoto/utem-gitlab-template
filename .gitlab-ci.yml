@@ -1,0 +1,109 @@
+# Self-test pipeline for utem-gitlab-template
+# Validates the template YAML and lints the shell script
+
+stages:
+  - validate
+  - lint
+
+# ── Validate YAML syntax ────────────────────────────────────────────────────
+validate-template:
+  stage: validate
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache python3 py3-pip >/dev/null 2>&1
+    - pip3 install --quiet yamllint 2>/dev/null || true
+  script:
+    - echo "Validating YAML syntax..."
+    - |
+      if command -v yamllint >/dev/null 2>&1; then
+        yamllint -d "{extends: default, rules: {line-length: {max: 200}, truthy: disable, comments-indentation: disable}}" templates/utem-scan.yml
+        echo "YAML lint passed."
+      else
+        echo "yamllint not available — falling back to python YAML parser."
+        python3 -c "
+      import yaml, sys
+      for f in ['templates/utem-scan.yml', '.gitlab-ci.yml']:
+          try:
+              with open(f) as fh:
+                  yaml.safe_load(fh)
+              print(f'{f}: valid YAML')
+          except yaml.YAMLError as e:
+              print(f'{f}: INVALID — {e}', file=sys.stderr)
+              sys.exit(1)
+      "
+      fi
+  rules:
+    - changes:
+        - templates/**/*
+        - .gitlab-ci.yml
+
+# ── Lint shell script ────────────────────────────────────────────────────────
+lint-script:
+  stage: lint
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache bash shellcheck >/dev/null 2>&1 || true
+  script:
+    - echo "Linting utem-scan.sh..."
+    - |
+      if command -v shellcheck >/dev/null 2>&1; then
+        shellcheck -s bash -S warning scripts/utem-scan.sh
+        echo "shellcheck passed."
+      else
+        echo "shellcheck not available — running bash syntax check."
+        bash -n scripts/utem-scan.sh
+        echo "bash -n syntax check passed."
+      fi
+    - echo "Checking script is executable..."
+    - test -x scripts/utem-scan.sh || echo "WARNING: scripts/utem-scan.sh is not executable (chmod +x)"
+  rules:
+    - changes:
+        - scripts/**/*
+
+# ── Verify required files exist ─────────────────────────────────────────────
+verify-structure:
+  stage: validate
+  image: alpine:3.20
+  script:
+    - echo "Verifying project structure..."
+    - |
+      exit_code=0
+      for f in templates/utem-scan.yml scripts/utem-scan.sh README.md LICENSE CHANGELOG.md; do
+        if [ -f "$f" ]; then
+          echo "  OK   $f"
+        else
+          echo "  MISSING  $f"
+          exit_code=1
+        fi
+      done
+      exit $exit_code
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ── Dry-run: verify script loads without errors ─────────────────────────────
+dry-run:
+  stage: lint
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache curl jq bash >/dev/null 2>&1
+  script:
+    - echo "Running dry-run (no API key = expected failure at validation)..."
+    - |
+      # The script should fail with a clear error about missing UTEM_API_KEY
+      set +e
+      output=$(bash scripts/utem-scan.sh 2>&1)
+      rc=$?
+      set -e
+
+      if [ $rc -eq 1 ] && echo "$output" | grep -q "UTEM_API_KEY is not set"; then
+        echo "Dry-run passed: script correctly requires UTEM_API_KEY."
+      else
+        echo "Dry-run failed: unexpected behavior."
+        echo "$output"
+        exit 1
+      fi
+  rules:
+    - changes:
+        - scripts/**/*
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
