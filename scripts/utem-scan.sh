@@ -8,6 +8,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+if [ "${CI_DEBUG_TRACE:-false}" = "true" ]; then
+    echo "WARNING: CI_DEBUG_TRACE is enabled. UTEM_API_KEY may appear in job logs." >&2
+    echo "Disable CI_DEBUG_TRACE before running in production." >&2
+fi
+
 # ── Constants ────────────────────────────────────────────────────────────────
 readonly VERSION="1.0.0"
 readonly POLL_INTERVAL=10
@@ -16,7 +21,6 @@ readonly SEVERITY_ORDER="critical high medium low info"
 # ── Configuration (from environment) ────────────────────────────────────────
 UTEM_API_KEY="${UTEM_API_KEY:-}"
 UTEM_BASE_URL="${UTEM_BASE_URL:-https://utem.innavoto.com}"
-UTEM_TENANT_ID="${UTEM_TENANT_ID:-1}"
 UTEM_SCAN_TYPE="${UTEM_SCAN_TYPE:-code}"
 UTEM_SEVERITY_THRESHOLD="${UTEM_SEVERITY_THRESHOLD:-high}"
 UTEM_FAIL_ON_FINDINGS="${UTEM_FAIL_ON_FINDINGS:-true}"
@@ -63,32 +67,43 @@ severity_rank() {
     esac
 }
 
-# Build Authorization header
-auth_header() {
-    echo "Authorization: Bearer ${UTEM_API_KEY}"
-}
-
 # Perform an authenticated GET request
 api_get() {
     local url="$1"
-    curl -fsSL \
-        -H "$(auth_header)" \
+    local trace_was_on=false
+    [[ "$-" == *x* ]] && trace_was_on=true
+    { set +x; } 2>/dev/null
+    local response
+    response=$(curl -fsSL \
+        --proto '=https' --proto-redir '=https' \
+        --connect-timeout 10 --max-time 30 \
+        --max-redirs 3 \
+        -H "Authorization: Bearer ${UTEM_API_KEY}" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: ${UTEM_TENANT_ID}" \
-        "${url}"
+        "${url}") || { $trace_was_on && set -x; return 1; }
+    $trace_was_on && set -x
+    echo "${response}"
 }
 
 # Perform an authenticated POST request
 api_post() {
     local url="$1"
     local data="$2"
-    curl -fsSL \
+    local trace_was_on=false
+    [[ "$-" == *x* ]] && trace_was_on=true
+    { set +x; } 2>/dev/null
+    local response
+    response=$(curl -fsSL \
         -X POST \
-        -H "$(auth_header)" \
+        --proto '=https' --proto-redir '=https' \
+        --connect-timeout 10 --max-time 30 \
+        --max-redirs 3 \
+        -H "Authorization: Bearer ${UTEM_API_KEY}" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: ${UTEM_TENANT_ID}" \
         -d "${data}" \
-        "${url}"
+        "${url}") || { $trace_was_on && set -x; return 1; }
+    $trace_was_on && set -x
+    echo "${response}"
 }
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -99,6 +114,12 @@ validate_inputs() {
         error ""
         error "Set it in GitLab -> Settings -> CI/CD -> Variables (masked & protected)."
         error "Generate an API key at: ${UTEM_BASE_URL}/settings/api-keys"
+        exit 1
+    fi
+
+    # Enforce HTTPS
+    if [[ "${UTEM_BASE_URL}" != https://* ]]; then
+        error "UTEM_BASE_URL must use HTTPS. Got: '${UTEM_BASE_URL}'"
         exit 1
     fi
 
@@ -142,13 +163,11 @@ trigger_scan() {
         --arg branch "${CI_COMMIT_REF_NAME}" \
         --arg pipeline_id "${CI_PIPELINE_ID}" \
         --arg modules "${UTEM_MODULES}" \
-        --arg tenant_id "${UTEM_TENANT_ID}" \
         '{
             target: $target,
             target_url: $target_url,
             scan_type: $scan_type,
             source: "gitlab-ci",
-            tenant_id: $tenant_id,
             metadata: {
                 commit_sha: $commit_sha,
                 branch: $branch,
@@ -167,8 +186,14 @@ trigger_scan() {
 
     SCAN_ID=$(echo "${response}" | jq -r '.id // .scan_id // empty')
     if [ -z "${SCAN_ID}" ]; then
-        error "Scan trigger response did not contain a scan ID."
-        error "Response: ${response}"
+        local error_detail
+        error_detail=$(echo "${response}" | jq -r '.detail // .message // .error // "unknown"' 2>/dev/null || echo "unparseable")
+        error "Scan trigger failed: ${error_detail}"
+        exit 1
+    fi
+
+    if ! echo "${SCAN_ID}" | grep -qE '^[a-zA-Z0-9_-]{1,128}$'; then
+        error "Invalid scan ID format: '${SCAN_ID}'"
         exit 1
     fi
 
@@ -291,18 +316,16 @@ generate_junit_xml() {
             echo "    <testcase name=\"No findings\" classname=\"utem.${UTEM_SCAN_TYPE}\" />"
         else
             echo "${findings}" | jq -r '
+                def xml_escape: gsub("[<>&\"]"; {
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    "&": "&amp;",
+                    "\"": "&quot;"
+                });
+                def cdata_escape: gsub("]]>"; "]]]]><![CDATA[>");
                 .[] |
-                @text "    <testcase name=\"\(.title // .name // .rule_id // "Finding" | gsub("[<>&\"]"; {
-                    "<": "&lt;",
-                    ">": "&gt;",
-                    "&": "&amp;",
-                    "\"": "&quot;"
-                }))\" classname=\"utem.\(.severity // .risk_level // "unknown" | ascii_downcase)\">\n      <failure message=\"\(.description // .detail // "Security finding detected" | gsub("[<>&\"]"; {
-                    "<": "&lt;",
-                    ">": "&gt;",
-                    "&": "&amp;",
-                    "\"": "&quot;"
-                }) | .[0:500])\" type=\"\(.severity // .risk_level // "unknown" | ascii_downcase)\"><![CDATA[\nSeverity: \(.severity // .risk_level // "unknown")\nRule: \(.rule_id // "N/A")\nFile: \(.file // .location // .resource // "N/A")\nLine: \(.line // .line_number // "N/A")\nCVE: \(.cve_id // .cve // "N/A")\nRemediation: \(.remediation // .fix // "See UTEM dashboard for details")\n]]></failure>\n    </testcase>"
+                (.severity // .risk_level // "unknown" | ascii_downcase) as $sev |
+                @text "    <testcase name=\"\(.title // .name // .rule_id // "Finding" | xml_escape)\" classname=\"utem.\($sev | xml_escape)\">\n      <failure message=\"\(.description // .detail // "Security finding detected" | xml_escape | .[0:500])\" type=\"\($sev | xml_escape)\"><![CDATA[\nSeverity: \(.severity // .risk_level // "unknown" | cdata_escape)\nRule: \(.rule_id // "N/A" | cdata_escape)\nFile: \(.file // .location // .resource // "N/A" | cdata_escape)\nLine: \(.line // .line_number // "N/A" | tostring | cdata_escape)\nCVE: \(.cve_id // .cve // "N/A" | cdata_escape)\nRemediation: \(.remediation // .fix // "See UTEM dashboard for details" | cdata_escape)\n]]></failure>\n    </testcase>"
             '
         fi
 

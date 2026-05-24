@@ -12,7 +12,6 @@
 
 variables:
   UTEM_BASE_URL: "https://utem.innavoto.com"
-  UTEM_TENANT_ID: "1"
   UTEM_SCAN_TYPE: "code"
   UTEM_SEVERITY_THRESHOLD: "high"
   UTEM_FAIL_ON_FINDINGS: "true"
@@ -28,7 +27,7 @@ variables:
       if [ -f "${CI_PROJECT_DIR}/scripts/utem-scan.sh" ]; then
         bash "${CI_PROJECT_DIR}/scripts/utem-scan.sh"
       else
-        bash <(curl -fsSL https://raw.githubusercontent.com/Innavoto/utem-gitlab-template/main/scripts/utem-scan.sh)
+        bash <(curl -fsSL https://raw.githubusercontent.com/Innavoto/utem-gitlab-template/dd39237760cd710fedfd9cd85ef9e71804fe84c6/scripts/utem-scan.sh)
       fi
   artifacts:
     reports:
