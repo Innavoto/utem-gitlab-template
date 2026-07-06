@@ -4,6 +4,7 @@
 stages:
   - validate
   - lint
+  - test
 
 # ── Validate YAML syntax ────────────────────────────────────────────────────
 validate-template:
@@ -68,7 +69,7 @@ verify-structure:
     - echo "Verifying project structure..."
     - |
       exit_code=0
-      for f in templates/utem-scan.yml scripts/utem-scan.sh README.md LICENSE CHANGELOG.md; do
+      for f in templates/utem-scan.yml scripts/utem-scan.sh tests/test_utem_scan.sh README.md LICENSE CHANGELOG.md; do
         if [ -f "$f" ]; then
           echo "  OK   $f"
         else
@@ -107,3 +108,18 @@ dry-run:
     - changes:
         - scripts/**/*
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ── Unit tests: exercise script logic against a mocked UTEM API ────────────
+unit-tests:
+  stage: test
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache bash curl jq python3 >/dev/null 2>&1
+  script:
+    - bash tests/test_utem_scan.sh
+  rules:
+    - changes:
+        - scripts/**/*
+        - tests/**/*
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

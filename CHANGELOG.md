@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `tests/test_utem_scan.sh` — bash test suite (42 assertions) covering
+  `scripts/utem-scan.sh` end to end, against a mocked UTEM API
+  (`tests/mocks/curl`): input validation, scan trigger, status polling
+  (completed/failed/queued-then-completed/timeout), result normalization
+  (array / `.findings` / `.items` / `.results` response shapes), JUnit XML
+  generation, and severity-threshold gating (fail / pass / report-only).
+- `unit-tests` CI job (`.gitlab-ci.yml`) runs the suite in `alpine:3.20` on
+  every MR, default-branch push, and change under `scripts/**` or `tests/**`.
+- README "Development" section documenting how to run and extend the tests.
+
+### Fixed
+
+- **JUnit XML escaping was a no-op.** `xml_escape` used
+  `gsub(regex; {object})`, which jq does not evaluate as a per-match
+  replacement map — it silently returned the *unescaped* input. Any finding
+  title/description containing `<`, `>`, `&`, or `"` (routine for security
+  findings, e.g. XSS/SQLi payloads) produced invalid, unescaped XML that
+  GitLab's JUnit report parser would reject. Fixed to use jq's named-capture
+  `gsub` form, which evaluates the replacement per match.
+- **`fetch_results()` corrupted its own return value.** `log()` wrote to
+  stdout, and `fetch_results()` called `log "Fetching scan results..."`
+  before its final `echo` of the findings JSON. Since `main()` captures
+  `fetch_results` via `findings=$(fetch_results)`, the log line was prepended
+  to the findings JSON, breaking every downstream `jq` parse (JUnit report,
+  severity counts, threshold gating) with a leaked log line prefix. Fixed
+  `log()` to write to stderr (matching `error()`), so only real return values
+  travel over stdout.
+- `POLL_INTERVAL` is now `${UTEM_POLL_INTERVAL:-10}` instead of a hardcoded
+  `readonly 10`, and `main` only runs when the script is executed directly
+  (`[[ "${BASH_SOURCE[0]}" == "${0}" ]]`) rather than unconditionally at the
+  bottom of the file — both changes exist solely to make the script testable
+  (fast polling in tests; sourceable without triggering a real scan) and do
+  not change production behavior (default poll interval is still 10s).
+
 ## [1.0.0] - 2026-05-24
 
 ### Added

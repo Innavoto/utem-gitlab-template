@@ -214,6 +214,31 @@ Set `UTEM_BASE_URL` to your instance URL. Ensure the GitLab runner can reach it 
 
 ---
 
+## Development
+
+### Running the test suite
+
+`scripts/utem-scan.sh` is covered by `tests/test_utem_scan.sh`, a self-contained
+bash test suite that exercises every stage of the script — input validation,
+scan trigger, status polling, result normalization, JUnit report generation,
+and severity-threshold gating — against a **mocked UTEM API**
+(`tests/mocks/curl`) so no network access or real UTEM instance is required.
+
+```bash
+bash tests/test_utem_scan.sh
+```
+
+Requires `bash`, `curl`, `jq`, and `python3` (the same runtimes the scan job
+itself needs, plus `python3` for an XML well-formedness check). This also runs
+automatically in CI as the `unit-tests` job in `.gitlab-ci.yml` whenever
+`scripts/**` or `tests/**` change.
+
+The mock intercepts `curl` via `PATH` and returns canned JSON fixtures keyed
+off the request URL (`POST /api/v1/scans` → trigger response, `GET
+/api/v1/scans/<id>` → status response, `GET /api/v1/scans/<id>/results` →
+findings). See the header comment in `tests/mocks/curl` for the fixture
+directory layout if you're adding new test cases.
+
 ## Support
 
 - **UTEM Dashboard:** https://utem.innavoto.com
