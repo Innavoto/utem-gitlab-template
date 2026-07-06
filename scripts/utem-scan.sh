@@ -15,7 +15,9 @@ fi
 
 # ── Constants ────────────────────────────────────────────────────────────────
 readonly VERSION="1.0.0"
-readonly POLL_INTERVAL=10
+# Overridable only for the test suite (tests/test_utem_scan.sh); production
+# callers should never set UTEM_POLL_INTERVAL.
+readonly POLL_INTERVAL="${UTEM_POLL_INTERVAL:-10}"
 readonly SEVERITY_ORDER="critical high medium low info"
 
 # ── Configuration (from environment) ────────────────────────────────────────
@@ -43,7 +45,12 @@ SUMMARY_TXT="utem-summary.txt"
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 log() {
-    echo "[UTEM] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"
+    # stderr, not stdout: fetch_results() is invoked as `findings=$(fetch_results)`
+    # in main(), and this function calls log() before its final `echo` of the
+    # findings JSON. Any stdout output from log() here would get captured
+    # into $findings and corrupt every downstream jq parse (JUnit report,
+    # severity counts, threshold gating) with a leaked log line prefix.
+    echo "[UTEM] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >&2
 }
 
 error() {
@@ -316,12 +323,18 @@ generate_junit_xml() {
             echo "    <testcase name=\"No findings\" classname=\"utem.${UTEM_SCAN_TYPE}\" />"
         else
             echo "${findings}" | jq -r '
-                def xml_escape: gsub("[<>&\"]"; {
+                # NOTE: gsub(regex; STRING) requires its replacement to be a
+                # string/expression evaluated per match -- passing a bare
+                # object (the previous implementation) silently produces the
+                # *unescaped* input on every jq version we have tested. The
+                # named-capture form below evaluates {...}[.c] per match, so
+                # it actually substitutes "<", ">", "&", "\"".
+                def xml_escape: gsub("(?<c>[<>&\"])"; {
                     "<": "&lt;",
                     ">": "&gt;",
                     "&": "&amp;",
                     "\"": "&quot;"
-                });
+                }[.c]);
                 def cdata_escape: gsub("]]>"; "]]]]><![CDATA[>");
                 .[] |
                 (.severity // .risk_level // "unknown" | ascii_downcase) as $sev |
@@ -439,4 +452,10 @@ main() {
     generate_summary "${findings}"
 }
 
-main "$@"
+# Only run main when executed directly (`./utem-scan.sh` or `bash utem-scan.sh`).
+# When sourced — e.g. by tests/test_utem_scan.sh — this lets callers exercise
+# individual functions (severity_rank, generate_junit_xml, ...) without
+# triggering a real scan or requiring a UTEM_API_KEY.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

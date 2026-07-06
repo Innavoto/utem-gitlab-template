@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# Mock `curl` used by tests/test_utem_scan.sh to stand in for the real UTEM
+# API. scripts/utem-scan.sh always issues requests with the target URL as
+# curl's *last* argument (see api_get/api_post) — this mock relies on that
+# convention and is not a general-purpose curl replacement.
+#
+# Selected via PATH: tests put this directory ahead of the real curl so
+# scripts/utem-scan.sh talks to canned JSON fixtures instead of the network.
+#
+# Controlled via env vars set by the test harness:
+#   MOCK_RESPONSES_DIR   directory holding trigger.json / results.json and,
+#                        for GET /scans/<id> status polls, either status.json
+#                        (one fixed response) or status_sequence.txt
+#                        (newline-delimited JSON, one response per poll call;
+#                        the last line repeats once the sequence is exhausted)
+#   MOCK_CURL_FAIL        "1" -> exit 7 (curl: couldn't connect), simulating
+#                        a network-level failure.
+#   MOCK_CURL_HTTP_FAIL   "1" -> exit 22 (curl -f: HTTP >= 400) with no body,
+#                        simulating an auth/HTTP error `curl -fsSL` swallows.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+if [[ "${MOCK_CURL_FAIL:-0}" == "1" ]]; then
+    echo "mock-curl: simulated connection failure" >&2
+    exit 7
+fi
+if [[ "${MOCK_CURL_HTTP_FAIL:-0}" == "1" ]]; then
+    exit 22
+fi
+
+: "${MOCK_RESPONSES_DIR:?MOCK_RESPONSES_DIR must be set to use the mock curl}"
+
+# scripts/utem-scan.sh always passes the URL as the final argument.
+url="${*: -1}"
+
+case "${url}" in
+    */api/v1/scans/*/results)
+        cat "${MOCK_RESPONSES_DIR}/results.json"
+        ;;
+    */api/v1/scans/*)
+        if [[ -f "${MOCK_RESPONSES_DIR}/status_sequence.txt" ]]; then
+            count_file="${MOCK_RESPONSES_DIR}/.status_call_count"
+            n=0
+            [[ -f "${count_file}" ]] && n=$(cat "${count_file}")
+            # awk (not `wc -l`) so a fixture whose last line lacks a
+            # trailing newline (common with `printf '%s'` heredocs) is
+            # still counted -- otherwise the sequence gets stuck repeating
+            # its second-to-last line forever.
+            total=$(awk 'END{print NR}' "${MOCK_RESPONSES_DIR}/status_sequence.txt")
+            idx=$(( n < total ? n : total - 1 ))
+            sed -n "$((idx + 1))p" "${MOCK_RESPONSES_DIR}/status_sequence.txt"
+            echo $((n + 1)) > "${count_file}"
+        else
+            cat "${MOCK_RESPONSES_DIR}/status.json"
+        fi
+        ;;
+    */api/v1/scans)
+        cat "${MOCK_RESPONSES_DIR}/trigger.json"
+        ;;
+    *)
+        echo "mock-curl: unrecognized URL: ${url}" >&2
+        exit 1
+        ;;
+esac
