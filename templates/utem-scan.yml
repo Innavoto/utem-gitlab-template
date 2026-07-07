@@ -1,25 +1,67 @@
-# UTEM Security Scanning Template for GitLab CI/CD
+# UTEM Security Scanning Component for GitLab CI/CD
 # Publisher: Innavoto India Pvt Ltd
 # https://utem.innavoto.com
 #
-# Usage:
+# ── CI/CD Catalog component usage (recommended) ──────────────────────────────
+#   include:
+#     - component: $CI_SERVER_FQDN/<group>/utem-gitlab-template/utem-scan@<version>
+#       inputs:
+#         severity_threshold: high
+#         fail_on_findings: true
+#
+# ── Legacy include (backward compatible — uses the input defaults below) ─────
 #   include:
 #     - project: 'Innavoto/utem-gitlab-template'
 #       file: '/templates/utem-scan.yml'
 #
-# Required CI/CD variable:
-#   UTEM_API_KEY — set in GitLab → Settings → CI/CD → Variables (masked)
+# Required CI/CD variable (deliberately NOT an input — a secret must never be
+# baked into interpolated pipeline config):
+#   UTEM_API_KEY — GitLab → Settings → CI/CD → Variables (masked & protected)
 
+spec:
+  inputs:
+    stage:
+      default: "test"
+      description: "Pipeline stage the UTEM scan jobs run in."
+    base_url:
+      default: "https://utem.innavoto.com"
+      description: "UTEM platform base URL. Override for self-hosted deployments (must be HTTPS)."
+    scan_type:
+      default: "code"
+      options: ["code", "full", "sbom", "container", "infrastructure"]
+      description: "Default scan type for the primary utem-code-scan job."
+    severity_threshold:
+      default: "high"
+      options: ["critical", "high", "medium", "low", "info"]
+      description: "Minimum finding severity that fails the pipeline."
+    fail_on_findings:
+      type: boolean
+      default: true
+      description: "When false, findings are reported but the pipeline does not fail (report-only mode)."
+    timeout:
+      type: number
+      default: 300
+      description: "Maximum seconds to wait for a scan to complete."
+    modules:
+      default: ""
+      description: "Comma-separated scan modules (e.g. sast,sca,secrets). Empty = all modules."
+    script_ref:
+      default: "dd39237760cd710fedfd9cd85ef9e71804fe84c6"
+      description: "Git ref/commit of utem-scan.sh used by the curl fallback when the script is not vendored in the consuming repo. Pin to a tag/SHA you trust."
+---
+# Global defaults (derived from component inputs). A consumer may still override
+# any of these per-job or at the project/group level via CI/CD variables.
 variables:
-  UTEM_BASE_URL: "https://utem.innavoto.com"
-  UTEM_SCAN_TYPE: "code"
-  UTEM_SEVERITY_THRESHOLD: "high"
-  UTEM_FAIL_ON_FINDINGS: "true"
-  UTEM_TIMEOUT: "300"
-  UTEM_MODULES: ""
+  UTEM_BASE_URL: "$[[ inputs.base_url ]]"
+  UTEM_SCAN_TYPE: "$[[ inputs.scan_type ]]"
+  UTEM_SEVERITY_THRESHOLD: "$[[ inputs.severity_threshold ]]"
+  UTEM_FAIL_ON_FINDINGS: "$[[ inputs.fail_on_findings ]]"
+  UTEM_TIMEOUT: "$[[ inputs.timeout ]]"
+  UTEM_MODULES: "$[[ inputs.modules ]]"
 
 .utem-scan:
   image: alpine:3.20
+  stage: "$[[ inputs.stage ]]"
   before_script:
     - apk add --no-cache curl jq bash >/dev/null 2>&1
   script:
@@ -27,7 +69,7 @@ variables:
       if [ -f "${CI_PROJECT_DIR}/scripts/utem-scan.sh" ]; then
         bash "${CI_PROJECT_DIR}/scripts/utem-scan.sh"
       else
-        bash <(curl -fsSL https://raw.githubusercontent.com/Innavoto/utem-gitlab-template/dd39237760cd710fedfd9cd85ef9e71804fe84c6/scripts/utem-scan.sh)
+        bash <(curl -fsSL "https://raw.githubusercontent.com/Innavoto/utem-gitlab-template/$[[ inputs.script_ref ]]/scripts/utem-scan.sh")
       fi
   artifacts:
     reports:
@@ -44,9 +86,8 @@ variables:
 # ──────────────────────────────────────────────────
 utem-code-scan:
   extends: .utem-scan
-  stage: test
   variables:
-    UTEM_SCAN_TYPE: "code"
+    UTEM_SCAN_TYPE: "$[[ inputs.scan_type ]]"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -56,7 +97,6 @@ utem-code-scan:
 # ──────────────────────────────────────────────────
 utem-full-scan:
   extends: .utem-scan
-  stage: test
   variables:
     UTEM_SCAN_TYPE: "full"
   rules:
@@ -69,7 +109,6 @@ utem-full-scan:
 # ──────────────────────────────────────────────────
 utem-sbom-scan:
   extends: .utem-scan
-  stage: test
   variables:
     UTEM_SCAN_TYPE: "sbom"
   rules:
@@ -82,7 +121,6 @@ utem-sbom-scan:
 # ──────────────────────────────────────────────────
 utem-scheduled-scan:
   extends: .utem-scan
-  stage: test
   variables:
     UTEM_SCAN_TYPE: "full"
   rules:

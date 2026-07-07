@@ -1,33 +1,40 @@
-# Self-test pipeline for utem-gitlab-template
-# Validates the template YAML and lints the shell script
+# Self-test + release pipeline for utem-gitlab-template
+#
+# This pipeline is meant to run on gitlab.com (see RUNBOOK.md). It:
+#   1. validates the component YAML + spec:inputs header,
+#   2. lints and unit-tests the scan script against a mocked UTEM API,
+#   3. on a semver tag, publishes the component to the GitLab CI/CD Catalog
+#      via a release (release-cli). Non-tag pipelines NEVER release.
 
 stages:
   - validate
   - lint
   - test
+  - release
 
-# ── Validate YAML syntax ────────────────────────────────────────────────────
+# ── Validate YAML syntax (both documents of the component) ──────────────────
 validate-template:
   stage: validate
   image: alpine:3.20
   before_script:
     - apk add --no-cache python3 py3-pip >/dev/null 2>&1
-    - pip3 install --quiet yamllint 2>/dev/null || true
+    - pip3 install --quiet --break-system-packages yamllint 2>/dev/null || pip3 install --quiet yamllint 2>/dev/null || true
   script:
     - echo "Validating YAML syntax..."
     - |
       if command -v yamllint >/dev/null 2>&1; then
-        yamllint -d "{extends: default, rules: {line-length: {max: 200}, truthy: disable, comments-indentation: disable}}" templates/utem-scan.yml
+        yamllint -d "{extends: default, rules: {line-length: {max: 200}, truthy: disable, comments-indentation: disable, document-start: disable}}" templates/utem-scan.yml .gitlab-ci.yml
         echo "YAML lint passed."
       else
         echo "yamllint not available — falling back to python YAML parser."
         python3 -c "
       import yaml, sys
+      # templates/utem-scan.yml is a TWO-document file (spec --- config), so
+      # use safe_load_all; .gitlab-ci.yml is single-document.
       for f in ['templates/utem-scan.yml', '.gitlab-ci.yml']:
           try:
-              with open(f) as fh:
-                  yaml.safe_load(fh)
-              print(f'{f}: valid YAML')
+              docs = list(yaml.safe_load_all(open(f)))
+              print(f'{f}: valid YAML ({len(docs)} document(s))')
           except yaml.YAMLError as e:
               print(f'{f}: INVALID — {e}', file=sys.stderr)
               sys.exit(1)
@@ -37,6 +44,28 @@ validate-template:
     - changes:
         - templates/**/*
         - .gitlab-ci.yml
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ── Validate the CI/CD Component spec:inputs header ─────────────────────────
+# A catalog component MUST have a parseable `spec.inputs` header whose defaults
+# are present and self-consistent. This asserts the component contract without
+# needing a live GitLab runner to resolve `include: component:`.
+validate-component-spec:
+  stage: validate
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache python3 >/dev/null 2>&1
+  script:
+    - echo "Validating component spec:inputs header..."
+    - python3 tests/validate_component_spec.py
+  rules:
+    - changes:
+        - templates/**/*
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
 
 # ── Lint shell script ────────────────────────────────────────────────────────
 lint-script:
@@ -60,6 +89,7 @@ lint-script:
   rules:
     - changes:
         - scripts/**/*
+    - if: $CI_COMMIT_TAG
 
 # ── Verify required files exist ─────────────────────────────────────────────
 verify-structure:
@@ -69,7 +99,7 @@ verify-structure:
     - echo "Verifying project structure..."
     - |
       exit_code=0
-      for f in templates/utem-scan.yml scripts/utem-scan.sh tests/test_utem_scan.sh README.md LICENSE CHANGELOG.md; do
+      for f in templates/utem-scan.yml scripts/utem-scan.sh tests/test_utem_scan.sh README.md LICENSE CHANGELOG.md RUNBOOK.md; do
         if [ -f "$f" ]; then
           echo "  OK   $f"
         else
@@ -81,6 +111,7 @@ verify-structure:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
 
 # ── Dry-run: verify script loads without errors ─────────────────────────────
 dry-run:
@@ -108,6 +139,7 @@ dry-run:
     - changes:
         - scripts/**/*
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
 
 # ── Unit tests: exercise script logic against a mocked UTEM API ────────────
 unit-tests:
@@ -123,3 +155,22 @@ unit-tests:
         - tests/**/*
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ── Publish to the GitLab CI/CD Catalog (semver tag only) ───────────────────
+# Requires: project hosted on gitlab.com + "CI/CD Catalog resource" enabled
+# (see RUNBOOK.md). The `release` keyword creates a GitLab release; for a
+# catalog project that release publishes this component version to the catalog.
+# The rule matches ONLY semantic-version tags, so branch/MR/schedule pipelines
+# never release. Runs in the last stage, so it is gated by the test stages above.
+create-catalog-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+$/
+  script:
+    - echo "Publishing UTEM security-scan CI/CD component ${CI_COMMIT_TAG} to the catalog."
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "UTEM security-scan component $CI_COMMIT_TAG"
+    description: "Release $CI_COMMIT_TAG of the UTEM GitLab CI/CD security-scan component. See CHANGELOG.md for details."
