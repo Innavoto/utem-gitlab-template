@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitLab CI/CD Component structure.** `templates/utem-scan.yml` now carries a
+  `spec:inputs` header (8 typed inputs, all with defaults), making it a valid
+  CI/CD Catalog component named `utem-scan`. Consumers can include it via
+  `include: component: $CI_SERVER_FQDN/<group>/utem-gitlab-template/utem-scan@<version>`
+  with `inputs:`. The legacy `include: project/file:` path still works and
+  resolves the same input defaults, so existing consumers are unaffected.
+- **Catalog release automation.** `.gitlab-ci.yml` gains a `release` stage with
+  a `create-catalog-release` job (`release-cli`) that publishes a new catalog
+  version on semantic-version tags only (`^v?\d+\.\d+\.\d+$`). Branch, MR, and
+  schedule pipelines never release.
+- **`validate-component-spec` CI job** + `tests/validate_component_spec.py` —
+  asserts the two-document component shape, that every input has a default, and
+  that every `$[[ inputs.* ]]` interpolation references a declared input.
+- **`RUNBOOK.md`** — the exact remaining human steps to actually list the
+  component in the GitLab CI/CD Catalog (host/mirror on gitlab.com under a group,
+  enable the "CI/CD Catalog resource" toggle, push a semver tag). Documents the
+  hard constraint that a GitHub-hosted project can never appear in the catalog.
+
 - `tests/test_utem_scan.sh` — bash test suite (42 assertions) covering
   `scripts/utem-scan.sh` end to end, against a mocked UTEM API
   (`tests/mocks/curl`): input validation, scan trigger, status polling
